@@ -1,0 +1,1681 @@
+<!DOCTYPE html>
+<html lang="tr" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Borsa-AI | Akıllı KAP Takip & Paper Trading</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#eef2ff',
+                            500: '#6366f1',
+                            600: '#4f46e5',
+                            700: '#4338ca',
+                            900: '#312e81',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <!-- Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 font-sans min-h-screen">
+
+    <!-- Üst Menü / Navbar -->
+    <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-40">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center shadow-lg shadow-indigo-500/20">
+                    <i class="fa-solid fa-chart-line text-white text-lg"></i>
+                </div>
+                <div>
+                    <h1 class="text-xl font-bold bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent">
+                        Borsa-AI
+                    </h1>
+                    <p class="text-xs text-slate-400">KAP Analiz & Paper Trading Günlüğü</p>
+                </div>
+            </div>
+            <div class="flex items-center space-x-3">
+                <!-- Son Güncelleme Zamanı Göstergesi -->
+                <div class="flex items-center space-x-2 bg-slate-800/80 border border-slate-700/60 px-3 py-1.5 rounded-lg text-xs">
+                    <span id="update-indicator" class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span class="text-slate-400">Son güncelleme: <span id="last-update-time" class="text-white font-mono font-medium">--:--:--</span></span>
+                </div>
+
+                <!-- Sistem Canlılık & Uptime Rozeti -->
+                <div id="system-uptime-badge" class="hidden sm:flex items-center space-x-2 px-3 py-1.5 rounded-lg text-xs font-semibold {% if portfolio.system_state.is_active %}bg-emerald-500/10 text-emerald-400 border border-emerald-500/20{% else %}bg-rose-500/10 text-rose-400 border border-rose-500/20{% endif %}">
+                    <span class="w-2 h-2 rounded-full {% if portfolio.system_state.is_active %}bg-emerald-400 animate-pulse{% else %}bg-rose-400{% endif %}"></span>
+                    <span id="system-uptime-text">
+                        {% if portfolio.system_state.is_active %}
+                        Sistem Aktif ({{ portfolio.system_state.uptime_str }})
+                        {% else %}
+                        ⚠️ Sistem Durdu (Son: {{ portfolio.system_state.last_active_str }})
+                        {% endif %}
+                    </span>
+                </div>
+
+                <!-- Model Bilgisi -->
+                <div class="hidden sm:flex items-center space-x-2 bg-slate-800/80 border border-slate-700/60 px-3 py-1.5 rounded-lg text-xs">
+                    <span class="text-slate-400">Model:</span>
+                    <span class="text-slate-200 font-medium">{{ model_name }}</span>
+                </div>
+
+                <!-- Anlık Yenileme Butonu -->
+                <button id="manual-refresh-btn" onclick="refreshDashboardData()" class="bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition">
+                    <i id="refresh-icon" class="fa-solid fa-arrows-rotate"></i>
+                    <span>Yenile</span>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+
+        <!-- Sistem Durdu Uyarısı (Eğer inaktifse) -->
+        <div id="system-stopped-alert" class="{% if portfolio.system_state.is_active %}hidden{% endif %} bg-rose-950/40 border border-rose-500/40 p-4 rounded-2xl flex items-center space-x-3 text-rose-300 text-xs">
+            <div class="w-8 h-8 rounded-xl bg-rose-500/20 flex items-center justify-center text-rose-400 flex-shrink-0">
+                <i class="fa-solid fa-triangle-exclamation text-base"></i>
+            </div>
+            <div class="flex-1">
+                <span class="font-bold block text-sm">⚠️ Sistem Şu An Çalışmıyor</span>
+                <span id="system-stopped-detail">En son döngü aktivitesi: <b class="font-mono text-white">{{ portfolio.system_state.last_active_str }}</b>. Yeni bildirim taraması için terminalde <code class="bg-slate-900 px-1 py-0.5 rounded text-rose-200">python main.py</code> komutunun çalıştığından emin olun.</span>
+            </div>
+        </div>
+
+        <!-- ================================================================= -->
+        <!-- 0. BÖLÜM: PORTFÖY SİMÜLASYONU & SERMAYE YÖNETİMİ -->
+        <!-- ================================================================= -->
+        <section class="space-y-4">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div class="flex items-center space-x-2">
+                    <div class="w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+                        <i class="fa-solid fa-vault text-sm"></i>
+                    </div>
+                    <div>
+                        <h2 class="text-lg font-bold text-white">Portföy Simülasyonu & Sermaye Yönetimi</h2>
+                        <p class="text-xs text-slate-400">Başlangıç Sermayesi: ₺{{ "{:,.0f}".format(portfolio.start_capital) }} | Pozisyon Başı: %10 (₺{{ "{:,.0f}".format(portfolio.start_capital * 0.10) }}) | Maks 10 Eşzamanlı Pozisyon</p>
+                    </div>
+                </div>
+                <div class="flex items-center space-x-2">
+                    <span id="skipped-trades-badge" class="text-xs px-2.5 py-1 rounded-lg font-medium {% if portfolio.skipped_trades_count > 0 %}bg-amber-500/10 text-amber-400 border border-amber-500/20{% else %}bg-slate-800 text-slate-400 border border-slate-700{% endif %}">
+                        <i class="fa-solid fa-shield-halved mr-1"></i> Atlanan İşlem: <b id="stat-skipped-count">{{ portfolio.skipped_trades_count }}</b>
+                    </span>
+                    <button onclick="resetSimulation()" class="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 hover:text-rose-200 text-xs font-semibold transition border border-rose-500/30 flex items-center space-x-1.5 shadow-sm">
+                        <i class="fa-solid fa-rotate-left text-xs"></i>
+                        <span>Simülasyonu Sıfırla (₺100.000)</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Portföy Özet Kartları (6 Kart) -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+                
+                <!-- 1. Başlangıç Sermayesi -->
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-sm">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-medium text-slate-400">Başlangıç Sermayesi</span>
+                        <div class="w-7 h-7 rounded-lg bg-slate-800 text-slate-300 flex items-center justify-center">
+                            <i class="fa-solid fa-wallet text-xs"></i>
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <span id="port-start-capital" class="text-2xl font-extrabold text-white">₺{{ "{:,.0f}".format(portfolio.start_capital) }}</span>
+                        <p class="text-[11px] text-slate-400">Simüle Ana Para</p>
+                    </div>
+                </div>
+
+                <!-- 2. Güncel Portföy Bakiyesi -->
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-sm">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-medium text-slate-400">Güncel Portföy Bakiyesi</span>
+                        <div class="w-7 h-7 rounded-lg bg-indigo-500/10 text-indigo-400 flex items-center justify-center">
+                            <i class="fa-solid fa-scale-balanced text-xs"></i>
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <span id="port-current-balance" class="text-2xl font-extrabold text-indigo-400">₺{{ "{:,.2f}".format(portfolio.current_balance) }}</span>
+                        <p id="port-pnl-sub" class="text-[11px] text-slate-400">Kasa + Açık Pozisyonlar</p>
+                    </div>
+                </div>
+
+                <!-- 3. Toplam Simüle Getiri -->
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-sm">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-medium text-slate-400">Toplam Portföy Getirisi</span>
+                        <div class="w-7 h-7 rounded-lg {% if portfolio.total_pnl >= 0 %}bg-emerald-500/10 text-emerald-400{% else %}bg-rose-500/10 text-rose-400{% endif %} flex items-center justify-center">
+                            <i class="fa-solid fa-arrow-trend-up text-xs"></i>
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <span id="port-total-return" class="text-2xl font-extrabold {% if portfolio.total_pnl >= 0 %}text-emerald-400{% else %}text-rose-400{% endif %}">
+                            {{ "{:+,.2f}".format(portfolio.total_pnl) }} ₺
+                        </span>
+                        <p id="port-total-return-pct" class="text-[11px] font-semibold {% if portfolio.total_return_pct >= 0 %}text-emerald-400{% else %}text-rose-400{% endif %}">
+                            {{ "{:+.2f}".format(portfolio.total_return_pct) }}%
+                        </p>
+                    </div>
+                </div>
+
+                <!-- 4. BIST100 Karşılaştırması -->
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-sm">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-medium text-slate-400">BIST 100 (XU100)</span>
+                        <div class="w-7 h-7 rounded-lg bg-sky-500/10 text-sky-400 flex items-center justify-center">
+                            <i class="fa-solid fa-chart-line text-xs"></i>
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <span id="port-bist100-return" class="text-2xl font-extrabold text-sky-400">{{ "{:+.2f}".format(portfolio.bist100_return_pct) }}%</span>
+                        <div class="mt-0.5">
+                            <span id="port-bist100-badge" class="inline-flex items-center text-[10px] font-bold px-1.5 py-0.5 rounded {% if portfolio.beats_bist100 %}bg-emerald-500/10 text-emerald-400 border border-emerald-500/20{% else %}bg-rose-500/10 text-rose-400 border border-rose-500/20{% endif %}">
+                                {% if portfolio.beats_bist100 %}🏆 Piyasayı Geçiyor{% else %}📉 Piyasanın Gerisinde{% endif %}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 5. Pozisyon Dağılımı -->
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-sm">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-medium text-slate-400">Pozisyon Dağılımı</span>
+                        <div class="w-7 h-7 rounded-lg bg-amber-500/10 text-amber-400 flex items-center justify-center">
+                            <i class="fa-solid fa-layer-group text-xs"></i>
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <span id="port-positions-count" class="text-2xl font-extrabold text-white">{{ portfolio.open_positions_count }} <span class="text-xs font-normal text-slate-400">Açık</span> / {{ portfolio.closed_positions_count }} <span class="text-xs font-normal text-slate-400">Kapalı</span></span>
+                        <p id="port-unrealized-sub" class="text-[11px] text-slate-400">Açık K/Z: <span class="{% if portfolio.unrealized_pnl >= 0 %}text-emerald-400{% else %}text-rose-400{% endif %} font-mono">₺{{ "{:+,.2f}".format(portfolio.unrealized_pnl) }}</span></p>
+                    </div>
+                </div>
+
+                <!-- 6. Gerçekleşmiş K/Z -->
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-sm">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-medium text-slate-400">Gerçekleşmiş K/Z</span>
+                        <div class="w-7 h-7 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
+                            <i class="fa-solid fa-lock text-xs"></i>
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <span id="port-realized-pnl" class="text-2xl font-extrabold {% if portfolio.realized_pnl >= 0 %}text-emerald-400{% else %}text-rose-400{% endif %}">
+                            ₺{{ "{:+,.2f}".format(portfolio.realized_pnl) }}
+                        </span>
+                        <p class="text-[11px] text-slate-400">{{ portfolio.closed_positions_count }} kapalı pozisyon</p>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Portföy Pozisyon Tablosu -->
+            <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-lg">
+                <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
+                    <h3 class="text-sm font-semibold text-white flex items-center space-x-2">
+                        <i class="fa-solid fa-table-list text-indigo-400"></i>
+                        <span>Portföy Pozisyonları (100.000 TL Sermaye Simülasyonu)</span>
+                    </h3>
+                    <span class="text-xs text-slate-400">5G sonuçlananlar 'Kapandı', devam edenler 'Açık' olarak anlık değerlenir</span>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-xs text-slate-300">
+                        <thead class="bg-slate-800/60 text-slate-400 uppercase tracking-wider font-semibold border-b border-slate-800">
+                            <tr>
+                                <th class="px-4 py-3">Hisse</th>
+                                <th class="px-4 py-3">Öneri</th>
+                                <th class="px-4 py-3">Pozisyon Tutarı</th>
+                                <th class="px-4 py-3">Giriş Fiyatı</th>
+                                <th class="px-4 py-3">Güncel / Çıkış Fiyatı</th>
+                                <th class="px-4 py-3">Durum</th>
+                                <th class="px-4 py-3">Simüle Kâr / Zarar</th>
+                                <th class="px-4 py-3">Getiri (%)</th>
+                                <th class="px-4 py-3 text-center">İşlem</th>
+                            </tr>
+                        </thead>
+                        <tbody id="portfolio-positions-tbody" class="divide-y divide-slate-800/60">
+                            {% for pos in portfolio.positions %}
+                            <tr class="hover:bg-slate-800/50 transition cursor-pointer" onclick="openTradeDetailModal({{ pos.id }})">
+                                <td class="px-4 py-3.5 font-bold text-white">
+                                    <span>{{ pos.stock_code }}</span>
+                                    <span class="block text-[10px] font-normal text-slate-400 truncate max-w-[140px]">{{ pos.company_name }}</span>
+                                </td>
+                                <td class="px-4 py-3.5">
+                                    {% if pos.recommendation == 'AL' %}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                        🟢 AL
+                                    </span>
+                                    {% else %}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                                        🔴 SAT
+                                    </span>
+                                    {% endif %}
+                                </td>
+                                <td class="px-4 py-3.5 font-mono text-slate-300">
+                                    ₺{{ "{:,.0f}".format(pos.position_size) }}
+                                </td>
+                                <td class="px-4 py-3.5 font-mono font-semibold text-white">
+                                    {% if pos.entry_price %}₺{{ "{:.2f}".format(pos.entry_price) }}{% else %}-{% endif %}
+                                </td>
+                                <td class="px-4 py-3.5 font-mono font-semibold text-white">
+                                    {% if pos.current_or_exit_price %}₺{{ "{:.2f}".format(pos.current_or_exit_price) }}{% else %}-{% endif %}
+                                </td>
+                                <td class="px-4 py-3.5">
+                                    {% if pos.status == 'AÇIK' %}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 mr-1.5 animate-pulse"></span>
+                                        AÇIK
+                                    </span>
+                                    {% else %}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-800 text-slate-400 border border-slate-700">
+                                        KAPANDI (5G)
+                                    </span>
+                                    {% endif %}
+                                </td>
+                                <td class="px-4 py-3.5 font-mono font-bold {% if pos.pnl >= 0 %}text-emerald-400{% else %}text-rose-400{% endif %}">
+                                    ₺{{ "{:+,.2f}".format(pos.pnl) }}
+                                </td>
+                                <td class="px-4 py-3.5 font-mono font-bold {% if pos.return_pct >= 0 %}text-emerald-400{% else %}text-rose-400{% endif %}">
+                                    {{ "{:+.2f}".format(pos.return_pct) }}%
+                                </td>
+                                <td class="px-4 py-3.5 text-center" onclick="event.stopPropagation()">
+                                    <button onclick="openTradeDetailModal({{ pos.id }})" class="px-2.5 py-1 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 text-xs font-semibold transition border border-indigo-500/30">
+                                        Detay & Grafik
+                                    </button>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- ================================================================= -->
+        <!-- 1. BÖLÜM: PAPER TRADING GÜNLÜĞÜ ÖZETİ VE İSTATİSTİKLERİ -->
+        <!-- ================================================================= -->
+        <section class="space-y-4">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-2">
+                    <div class="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                        <i class="fa-solid fa-book-bookmark text-sm"></i>
+                    </div>
+                    <div>
+                        <h2 class="text-lg font-bold text-white">Paper Trading Günlüğü</h2>
+                        <p class="text-xs text-slate-400">Gerçek zamanlı AL/SAT önerilerinin 1G ve 5G performans takibi</p>
+                    </div>
+                </div>
+                <div class="text-xs text-slate-400 flex items-center space-x-1.5">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                    <span>Tüm BIST Canlı Takipte</span>
+                </div>
+            </div>
+
+            <!-- Paper Trading İstatistik Kartları (6 Kart) -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+                
+                <!-- 1. Toplam İşlem -->
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-sm">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-medium text-slate-400">Toplam İşlem</span>
+                        <div class="w-7 h-7 rounded-lg bg-indigo-500/10 text-indigo-400 flex items-center justify-center">
+                            <i class="fa-solid fa-list-check text-xs"></i>
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <span id="stat-total-trades" class="text-2xl font-extrabold text-white">{{ paper_stats.total_trades }}</span>
+                        <p id="stat-trade-breakdown" class="text-[11px] text-slate-400">({{ paper_stats.total_al }} AL, {{ paper_stats.total_sat }} SAT)</p>
+                    </div>
+                </div>
+
+                <!-- 2. 1G İsabet -->
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-sm">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-medium text-slate-400">1G İsabet</span>
+                        <div class="w-7 h-7 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
+                            <i class="fa-solid fa-bullseye text-xs"></i>
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <span id="stat-hitrate-1d" class="text-2xl font-extrabold {% if paper_stats.hit_rate_1d >= 50 %}text-emerald-400{% else %}text-amber-400{% endif %}">
+                            %{{ paper_stats.hit_rate_1d }}
+                        </span>
+                        <p id="stat-resolved-1d" class="text-[11px] text-slate-400">({{ paper_stats.correct_1d }}/{{ paper_stats.resolved_1d }} sonuç)</p>
+                    </div>
+                </div>
+
+                <!-- 3. Simüle PnL (1G) -->
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-sm">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-medium text-slate-400">Simüle K/Z (1G)</span>
+                        <div class="w-7 h-7 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
+                            <i class="fa-solid fa-turkish-lira-sign text-xs"></i>
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <span id="stat-pnl-1d" class="text-2xl font-extrabold {% if (paper_stats.total_pnl_1d or 0) >= 0 %}text-emerald-400{% else %}text-rose-400{% endif %}">
+                            ₺{{ "{:+,.2f}".format(paper_stats.total_pnl_1d or 0.0) }}
+                        </span>
+                        <p class="text-[11px] text-slate-400">1G Toplam P&L</p>
+                    </div>
+                </div>
+
+                <!-- 4. 5G İsabet -->
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-sm">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-medium text-slate-400">5G İsabet</span>
+                        <div class="w-7 h-7 rounded-lg bg-sky-500/10 text-sky-400 flex items-center justify-center">
+                            <i class="fa-solid fa-chart-pie text-xs"></i>
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <span id="stat-hitrate-5d" class="text-2xl font-extrabold {% if paper_stats.hit_rate_5d >= 50 %}text-emerald-400{% else %}text-amber-400{% endif %}">
+                            %{{ paper_stats.hit_rate_5d }}
+                        </span>
+                        <p id="stat-resolved-5d" class="text-[11px] text-slate-400">({{ paper_stats.correct_5d }}/{{ paper_stats.resolved_5d }} sonuç)</p>
+                    </div>
+                </div>
+
+                <!-- 5. Simüle PnL (5G) -->
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-sm">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-medium text-slate-400">Simüle K/Z (5G)</span>
+                        <div class="w-7 h-7 rounded-lg bg-sky-500/10 text-sky-400 flex items-center justify-center">
+                            <i class="fa-solid fa-money-bill-trend-up text-xs"></i>
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <span id="stat-pnl-5d" class="text-2xl font-extrabold {% if (paper_stats.total_pnl_5d or 0) >= 0 %}text-emerald-400{% else %}text-rose-400{% endif %}">
+                            ₺{{ "{:+,.2f}".format(paper_stats.total_pnl_5d or 0.0) }}
+                        </span>
+                        <p class="text-[11px] text-slate-400">5G Toplam P&L</p>
+                    </div>
+                </div>
+
+                <!-- 6. Bekleyenler -->
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-sm">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-medium text-slate-400">Bekleyen</span>
+                        <div class="w-7 h-7 rounded-lg bg-amber-500/10 text-amber-400 flex items-center justify-center">
+                            <i class="fa-regular fa-clock text-xs"></i>
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <span id="stat-pending-count" class="text-2xl font-extrabold text-amber-400">{{ paper_stats.pending_count }}</span>
+                        <p class="text-[11px] text-slate-400">işlem beklemede</p>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Paper Trading İşlem Tablosu -->
+            <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-lg">
+                <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
+                    <h3 class="text-sm font-semibold text-white">İşlem Günlüğü & Performans Doğrulama</h3>
+                    <span class="text-xs text-slate-400">Satıra tıklayarak bildirim & fiyat grafiğini inceleyin</span>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-xs text-slate-300">
+                        <thead class="bg-slate-800/60 text-slate-400 uppercase tracking-wider font-semibold border-b border-slate-800">
+                            <tr>
+                                <th class="px-4 py-3">Hisse</th>
+                                <th class="px-4 py-3">Öneri</th>
+                                <th class="px-4 py-3">Güven & Kalibrasyon</th>
+                                <th class="px-4 py-3">Giriş Fiyatı</th>
+                                <th class="px-4 py-3">1G Sonuç & P&L</th>
+                                <th class="px-4 py-3">5G Sonuç & P&L</th>
+                                <th class="px-4 py-3">Öneri Tarihi</th>
+                                <th class="px-4 py-3">Gerekçe</th>
+                                <th class="px-4 py-3 text-center">İşlem</th>
+                            </tr>
+                        </thead>
+                        <tbody id="paper-trades-tbody" class="divide-y divide-slate-800/60">
+                            {% for trade in paper_trades %}
+                            <tr class="hover:bg-slate-800/50 transition cursor-pointer" onclick="openTradeDetailModal({{ trade.id }})">
+                                <td class="px-4 py-4 font-bold text-white flex items-center space-x-1.5">
+                                    <span>{{ trade.stock_code }}</span>
+                                    {% if trade.link %}
+                                    <a href="{{ trade.link }}" target="_blank" onclick="event.stopPropagation()" class="text-indigo-400 hover:text-indigo-300 text-xs">
+                                        <i class="fa-solid fa-arrow-up-right-from-square"></i>
+                                    </a>
+                                    {% endif %}
+                                </td>
+                                <td class="px-4 py-4">
+                                    {% if trade.recommendation == 'AL' %}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                        🟢 AL
+                                    </span>
+                                    {% elif trade.recommendation == 'SAT' %}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                                        🔴 SAT
+                                    </span>
+                                    {% else %}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-slate-700 text-slate-300">
+                                        ⚪ NÖTR
+                                    </span>
+                                    {% endif %}
+                                </td>
+                                <td class="px-4 py-4 whitespace-nowrap">
+                                    <span class="text-amber-400">
+                                        {% for _ in range(trade.confidence or 3) %}★{% endfor %}
+                                    </span>
+                                    <span class="text-slate-400 text-[11px] block">
+                                        Güven: {{ trade.confidence }}/5
+                                    </span>
+                                </td>
+                                <td class="px-4 py-4">
+                                    {% if trade.entry_price %}
+                                    <span class="font-mono font-semibold text-white">₺{{ "%.2f"|format(trade.entry_price) }}</span>
+                                    {% if trade.entry_note %}
+                                    <span class="block text-[10px] text-slate-500 truncate max-w-[130px]" title="{{ trade.entry_note }}">{{ trade.entry_note }}</span>
+                                    {% endif %}
+                                    {% else %}
+                                    <span class="text-slate-500 italic">Bekleniyor</span>
+                                    {% endif %}
+                                </td>
+                                <td class="px-4 py-4">
+                                    {% if trade.checked_1d %}
+                                        {% if trade.outcome_1d == 'DOĞRU' %}
+                                        <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                            ✓ DOĞRU (₺{{ "%.2f"|format(trade.price_1d) }})
+                                        </span>
+                                        {% else %}
+                                        <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-rose-500/20 text-rose-400 border border-rose-500/30">
+                                            ✗ YANLIŞ (₺{{ "%.2f"|format(trade.price_1d) }})
+                                        </span>
+                                        {% endif %}
+                                        {% if trade.pnl_1d is not none %}
+                                        <span class="block text-[10px] font-mono mt-0.5 {% if trade.pnl_1d >= 0 %}text-emerald-400{% else %}text-rose-400{% endif %}">
+                                            P&L: ₺{{ "{:+,.2f}".format(trade.pnl_1d) }}
+                                        </span>
+                                        {% endif %}
+                                    {% else %}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-slate-800 text-slate-400 border border-slate-700">
+                                        ⏳ Bekliyor
+                                    </span>
+                                    {% endif %}
+                                </td>
+                                <td class="px-4 py-4">
+                                    {% if trade.checked_5d %}
+                                        {% if trade.outcome_5d == 'DOĞRU' %}
+                                        <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                            ✓ DOĞRU (₺{{ "%.2f"|format(trade.price_5d) }})
+                                        </span>
+                                        {% else %}
+                                        <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-rose-500/20 text-rose-400 border border-rose-500/30">
+                                            ✗ YANLIŞ (₺{{ "%.2f"|format(trade.price_5d) }})
+                                        </span>
+                                        {% endif %}
+                                        {% if trade.pnl_5d is not none %}
+                                        <span class="block text-[10px] font-mono mt-0.5 {% if trade.pnl_5d >= 0 %}text-emerald-400{% else %}text-rose-400{% endif %}">
+                                            P&L: ₺{{ "{:+,.2f}".format(trade.pnl_5d) }}
+                                        </span>
+                                        {% endif %}
+                                    {% else %}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-slate-800 text-slate-400 border border-slate-700">
+                                        ⏳ Bekliyor
+                                    </span>
+                                    {% endif %}
+                                </td>
+                                <td class="px-4 py-4 text-slate-400 whitespace-nowrap">
+                                    {{ trade.recommended_at }}
+                                </td>
+                                <td class="px-4 py-4 text-slate-300 max-w-[180px] truncate" title="{{ trade.reasoning }}">
+                                    {{ trade.reasoning }}
+                                </td>
+                                <td class="px-4 py-4 text-center" onclick="event.stopPropagation()">
+                                    <button onclick="openTradeDetailModal({{ trade.id }})" class="bg-slate-800 hover:bg-indigo-600 hover:text-white text-slate-300 px-2.5 py-1 rounded-lg text-[11px] font-medium transition flex items-center space-x-1 mx-auto border border-slate-700">
+                                        <i class="fa-solid fa-chart-area"></i>
+                                        <span>Detay & Grafik</span>
+                                    </button>
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="9" class="px-6 py-8 text-center text-slate-500">
+                                    Henüz kaydedilmiş Paper Trade işlemi bulunmuyor. Yeni AL/SAT önerisi üretildiğinde otomatik listelenecektir.
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- ================================================================= -->
+        <!-- 2. BÖLÜM: YAPAY ZEKA KAP BİLDİRİM VE ANALİZ AKIŞI -->
+        <!-- ================================================================= -->
+        <section class="space-y-4">
+            <div class="flex items-center space-x-2">
+                <div class="w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+                    <i class="fa-solid fa-robot text-sm"></i>
+                </div>
+                <div>
+                    <h2 class="text-lg font-bold text-white">Yapay Zeka Analiz Akışı</h2>
+                    <p class="text-xs text-slate-400">KAP bildirimlerinin LLM tarafından üretilen anlık analiz ve gerekçeleri</p>
+                </div>
+            </div>
+
+            <div id="recommendations-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {% for rec in recommendations %}
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 hover:border-slate-700 transition flex flex-col justify-between shadow-sm">
+                    <div>
+                        <div class="flex items-center justify-between mb-3">
+                            <span class="text-xs font-bold text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20">
+                                {{ rec.stock_code }}
+                            </span>
+                            <div>
+                                {% if rec.recommendation == 'AL' %}
+                                <span class="px-2.5 py-1 rounded-full text-xs font-extrabold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                                    🟢 AL
+                                </span>
+                                {% elif rec.recommendation == 'SAT' %}
+                                <span class="px-2.5 py-1 rounded-full text-xs font-extrabold bg-rose-500/10 text-rose-400 border border-rose-500/30">
+                                    🔴 SAT
+                                </span>
+                                {% else %}
+                                <span class="px-2.5 py-1 rounded-full text-xs font-extrabold bg-slate-800 text-slate-400 border border-slate-700">
+                                    ⚪ NÖTR
+                                </span>
+                                {% endif %}
+                            </div>
+                        </div>
+                        <h4 class="text-sm font-semibold text-white mb-2 line-clamp-2" title="{{ rec.title }}">{{ rec.title }}</h4>
+                        <p class="text-xs text-slate-400 leading-relaxed mb-3 bg-slate-950/60 p-3 rounded-xl border border-slate-800/80">
+                            {{ rec.reasoning }}
+                        </p>
+                    </div>
+                    <div class="flex items-center justify-between text-[11px] text-slate-500 pt-3 border-t border-slate-800/60">
+                        <span class="text-amber-400">
+                            {% for _ in range(rec.confidence or 3) %}★{% endfor %}
+                            <span class="text-slate-500 text-[10px]">({{ rec.confidence }}/5)</span>
+                        </span>
+                        <span>{{ rec.publish_date }}</span>
+                    </div>
+                </div>
+                {% else %}
+                <div class="col-span-3 bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center text-slate-500">
+                    Henüz analiz edilmiş bildirim bulunmuyor.
+                </div>
+                {% endfor %}
+            </div>
+        </section>
+
+    </main>
+
+    <!-- ================================================================= -->
+    <!-- 3. BÖLÜM: İŞLEM DETAY & FİYAT GRAFİĞİ MODALI -->
+    <!-- ================================================================= -->
+    <div id="detail-modal" class="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm hidden items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-3xl max-w-4xl w-full max-h-[92vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            
+            <!-- Modal Başlık -->
+            <div class="p-6 border-b border-slate-800 flex items-center justify-between bg-slate-900/90">
+                <div class="flex items-center space-x-3">
+                    <span id="modal-stock-badge" class="text-base font-extrabold text-indigo-400 bg-indigo-500/10 px-3 py-1 rounded-xl border border-indigo-500/20">
+                        THYAO
+                    </span>
+                    <div>
+                        <h3 id="modal-company-name" class="text-base font-bold text-white">Şirket Unvanı</h3>
+                        <p id="modal-subtitle" class="text-xs text-slate-400">Özel Durum Açıklaması Detayı & Fiyat Grafiği</p>
+                    </div>
+                </div>
+                <div class="flex items-center space-x-2">
+                    <span id="modal-rec-badge"></span>
+                    <button onclick="closeTradeDetailModal()" class="w-8 h-8 rounded-xl bg-slate-800 text-slate-400 hover:text-white flex items-center justify-center transition">
+                        <i class="fa-solid fa-xmark text-base"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Modal İçerik -->
+            <div class="p-6 space-y-6 overflow-y-auto text-xs text-slate-300">
+                
+                <!-- Özet Finansal ve PnL Kartı -->
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-950 p-4 rounded-2xl border border-slate-800">
+                    <div>
+                        <span class="text-[11px] text-slate-400 block">Giriş Fiyatı</span>
+                        <span id="modal-entry-price" class="text-base font-mono font-bold text-white">₺0.00</span>
+                        <span id="modal-entry-note" class="text-[10px] text-slate-500 block truncate">Seans İçi</span>
+                    </div>
+                    <div>
+                        <span class="text-[11px] text-slate-400 block">1G Fiyat & P&L</span>
+                        <span id="modal-price-1d" class="text-base font-mono font-bold text-white">₺0.00</span>
+                        <span id="modal-pnl-1d" class="text-[10px] font-mono block">₺0.00</span>
+                    </div>
+                    <div>
+                        <span class="text-[11px] text-slate-400 block">5G Fiyat & P&L</span>
+                        <span id="modal-price-5d" class="text-base font-mono font-bold text-white">₺0.00</span>
+                        <span id="modal-pnl-5d" class="text-[10px] font-mono block">₺0.00</span>
+                    </div>
+                    <div>
+                        <span class="text-[11px] text-slate-400 block">Model Güveni & Kalibrasyon</span>
+                        <span id="modal-confidence" class="text-sm font-bold text-amber-400 block">★★★★☆</span>
+                        <span id="modal-confidence-calib" class="text-[10px] text-slate-400 block">Geçmiş İsabet: --</span>
+                    </div>
+                </div>
+
+                <!-- Şirket Temel Verileri & Finansal Rasyolar (Borsapy Entegrasyonu) -->
+                <div class="space-y-2">
+                    <div class="flex items-center justify-between">
+                        <h4 class="text-xs font-bold uppercase tracking-wider text-indigo-400 flex items-center space-x-1.5">
+                            <i class="fa-solid fa-building-columns"></i>
+                            <span>Şirket Temel Verileri & Finansal Rasyolar</span>
+                        </h4>
+                        <div class="flex items-center space-x-2">
+                            <span id="fundamentals-period-badge" class="text-[11px] font-semibold bg-indigo-500/10 text-indigo-300 px-2 py-0.5 rounded-lg border border-indigo-500/20">
+                                Son Bilanço Dönemi: --
+                            </span>
+                            <span id="fundamentals-loading-badge" class="text-[10px] text-slate-400 flex items-center space-x-1">
+                                <i class="fa-solid fa-spinner fa-spin text-indigo-400"></i>
+                                <span>Temel veriler yükleniyor...</span>
+                            </span>
+                        </div>
+                    </div>
+
+                    <div class="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-3">
+                        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                            <div class="bg-slate-900/70 p-3 rounded-xl border border-slate-800/80">
+                                <span class="text-slate-400 block text-[10px] uppercase font-semibold">F/K Oranı</span>
+                                <span id="fund-pe-ratio" class="font-mono font-bold text-base text-white">--</span>
+                            </div>
+                            <div class="bg-slate-900/70 p-3 rounded-xl border border-slate-800/80">
+                                <span class="text-slate-400 block text-[10px] uppercase font-semibold">PD/DD Oranı</span>
+                                <span id="fund-pb-ratio" class="font-mono font-bold text-base text-white">--</span>
+                            </div>
+                            <div class="bg-slate-900/70 p-3 rounded-xl border border-slate-800/80">
+                                <span class="text-slate-400 block text-[10px] uppercase font-semibold">Piyasa Değeri</span>
+                                <span id="fund-market-cap" class="font-mono font-bold text-base text-emerald-400">--</span>
+                            </div>
+                            <div class="bg-slate-900/70 p-3 rounded-xl border border-slate-800/80">
+                                <span class="text-slate-400 block text-[10px] uppercase font-semibold">Halka Açıklık / Yabancı</span>
+                                <span id="fund-float-ratio" class="font-mono font-bold text-sm text-white">--</span>
+                            </div>
+                        </div>
+
+                        <!-- Bilanço Özeti (Varsa) -->
+                        <div id="fund-balance-summary-row" class="hidden grid grid-cols-1 sm:grid-cols-3 gap-3 text-[11px] pt-2 border-t border-slate-800/60">
+                            <div>
+                                <span class="text-slate-500 block text-[10px]">Dönem Net Kârı:</span>
+                                <span id="fund-net-profit" class="font-mono font-semibold text-emerald-400">--</span>
+                            </div>
+                            <div>
+                                <span class="text-slate-500 block text-[10px]">Toplam Özkaynaklar:</span>
+                                <span id="fund-total-equity" class="font-mono font-semibold text-slate-200">--</span>
+                            </div>
+                            <div>
+                                <span class="text-slate-500 block text-[10px]">Toplam Varlıklar:</span>
+                                <span id="fund-total-assets" class="font-mono font-semibold text-slate-200">--</span>
+                            </div>
+                        </div>
+
+                        <!-- Kullanıcı Uyarı / Bilgilendirme Notu -->
+                        <p class="text-[10px] text-slate-500 italic flex items-center space-x-1 pt-1">
+                            <i class="fa-solid fa-circle-info text-[10px] text-indigo-400"></i>
+                            <span>* Fiyat bazlı oranlar (F/K, PD/DD, Piyasa Değeri) anlık piyasa fiyatına; bilanço verileri ise şirketin son açıkladığı resmi finansal rapor dönemine aittir.</span>
+                        </p>
+                    </div>
+                </div>
+
+                <!-- 15-20 İş Günü Fiyat Grafiği Bölümü -->
+                <div class="space-y-2">
+                    <div class="flex items-center justify-between">
+                        <h4 class="text-xs font-bold uppercase tracking-wider text-indigo-400 flex items-center space-x-1.5">
+                            <i class="fa-solid fa-chart-line"></i>
+                            <span>Bildirim Çevresi Fiyat Grafiği (15-20 İş Günü)</span>
+                        </h4>
+                        <span id="chart-loading-badge" class="text-[10px] text-slate-400 flex items-center space-x-1">
+                            <i class="fa-solid fa-spinner fa-spin text-indigo-400"></i>
+                            <span>Fiyat grafiği yükleniyor...</span>
+                        </span>
+                    </div>
+                    <div class="bg-slate-950 p-4 rounded-2xl border border-slate-800 relative w-full h-64 flex flex-col justify-center">
+                        <canvas id="tradePriceChart" class="w-full h-full"></canvas>
+                        <div id="chart-fallback" class="hidden text-center text-slate-500 py-12">
+                            <i class="fa-solid fa-chart-line text-3xl mb-2 text-slate-600 block"></i>
+                            <span id="chart-fallback-text" class="text-xs">Bu hisse için tarihsel fiyat grafiği verisi bulunamadı.</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Model Gerekçesi -->
+                <div class="space-y-2">
+                    <h4 class="text-xs font-bold uppercase tracking-wider text-indigo-400 flex items-center space-x-1.5">
+                        <i class="fa-solid fa-brain"></i>
+                        <span>Yapay Zeka Analiz Gerekçesi</span>
+                    </h4>
+                    <p id="modal-reasoning" class="bg-indigo-950/20 border border-indigo-500/20 p-4 rounded-2xl text-slate-200 leading-relaxed text-sm">
+                        ...
+                    </p>
+                </div>
+
+                <!-- Zaman Çizelgesi -->
+                <div class="space-y-2">
+                    <h4 class="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center space-x-1.5">
+                        <i class="fa-regular fa-clock"></i>
+                        <span>Zaman Çizelgesi ve Seans Bilgisi</span>
+                    </h4>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-950 p-3 rounded-2xl border border-slate-800 text-[11px]">
+                        <div>
+                            <span class="text-slate-500 block">KAP Yayın Tarihi:</span>
+                            <span id="modal-publish-date" class="font-medium text-white">--</span>
+                        </div>
+                        <div>
+                            <span class="text-slate-500 block">Öneri Üretilme Tarihi:</span>
+                            <span id="modal-recommended-at" class="font-medium text-white">--</span>
+                        </div>
+                        <div>
+                            <span class="text-slate-500 block">İşlem Giriş Seansı:</span>
+                            <span id="modal-entry-date" class="font-medium text-white">--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Bildirim Tam Metni ve Özeti -->
+                <div class="space-y-2">
+                    <h4 class="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center space-x-1.5">
+                        <i class="fa-solid fa-file-lines"></i>
+                        <span>KAP Bildirim Başlığı & Özeti</span>
+                    </h4>
+                    <div class="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-3">
+                        <div>
+                            <span class="text-slate-500 block text-[10px]">Başlık / Konu:</span>
+                            <p id="modal-notif-title" class="font-semibold text-white text-xs">--</p>
+                        </div>
+                        <div>
+                            <span class="text-slate-500 block text-[10px]">Bildirim Özeti / İçerik:</span>
+                            <p id="modal-notif-summary" class="text-slate-300 text-xs leading-relaxed whitespace-pre-wrap">--</p>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Modal Alt Butonlar -->
+            <div class="p-4 border-t border-slate-800 flex items-center justify-between bg-slate-900/90">
+                <a id="modal-kap-link" href="#" target="_blank" class="bg-slate-800 hover:bg-slate-700 text-indigo-400 hover:text-indigo-300 px-4 py-2 rounded-xl text-xs font-semibold flex items-center space-x-2 transition border border-slate-700">
+                    <i class="fa-solid fa-arrow-up-right-from-square"></i>
+                    <span>KAP Orijinal Bildirimini Aç</span>
+                </a>
+                <button onclick="closeTradeDetailModal()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2 rounded-xl text-xs font-semibold transition">
+                    Kapat
+                </button>
+            </div>
+
+        </div>
+    </div>
+
+    <footer class="border-t border-slate-800 bg-slate-900/60 py-6 text-center text-xs text-slate-500">
+        <p>Borsa-AI &copy; 2026. Bu sistem yatırım tavsiyesi içermez. Paper trading kayıtları ve P&L hesapları gözlem amaçlı simülasyondur.</p>
+    </footer>
+
+    <!-- ================================================================= -->
+    <!-- DİNAMİK AUTO-REFRESH & CHART.JS JAVASCRIPT MOTORU -->
+    <!-- ================================================================= -->
+    <script>
+        // =====================================================================
+        // KULLANICI AYARI: YENİLEME SIKLIĞI (Milisaniye)
+        // =====================================================================
+        const REFRESH_INTERVAL_MS = 10000; // 10 saniyede bir otomatik güncelle
+
+        // Global önbellek (Sayfa yüklenirken sunucudan başlangıç verisi alınır)
+        let cachedTrades = {{ paper_trades | tojson | safe }};
+        let cachedConfidenceStats = {{ (paper_stats.confidence_stats or {}) | tojson | safe }};
+        let priceChartInstance = null;
+
+        console.log("🚀 Borsa-AI Dashboard Başlatıldı. Yüklenen Kayıt Sayısı:", cachedTrades.length);
+
+        // Sayfa ilk yüklendiğinde saati yaz
+        updateTimestampDisplay();
+
+        // Periyodik yenileme zamanlayıcısı
+        const refreshTimer = setInterval(refreshDashboardData, REFRESH_INTERVAL_MS);
+
+        /**
+         * Sayfayı yeniden yüklemeden (flicker olmadan) API'lardan veriyi çeker ve DOM'u günceller.
+         */
+        async function refreshDashboardData() {
+            const refreshIcon = document.getElementById('refresh-icon');
+            const updateIndicator = document.getElementById('update-indicator');
+            
+            if (refreshIcon) refreshIcon.classList.add('fa-spin');
+            if (updateIndicator) updateIndicator.classList.replace('bg-emerald-500', 'bg-indigo-400');
+
+            try {
+                // Paralel API istekleri
+                const [statsRes, tradesRes, recsRes, portRes] = await Promise.all([
+                    fetch('/api/paper-trades/stats'),
+                    fetch('/api/paper-trades?limit=50'),
+                    fetch('/api/recommendations?limit=25'),
+                    fetch('/api/portfolio-summary')
+                ]);
+
+                if (statsRes.ok) {
+                    const stats = await statsRes.json();
+                    cachedConfidenceStats = stats.confidence_stats || {};
+                    updatePaperStatsUI(stats);
+                }
+
+                if (tradesRes.ok) {
+                    const trades = await tradesRes.json();
+                    cachedTrades = trades;
+                    updatePaperTradesTableUI(trades);
+                }
+
+                if (recsRes.ok) {
+                    const recs = await recsRes.json();
+                    updateRecommendationsUI(recs);
+                }
+
+                if (portRes && portRes.ok) {
+                    const port = await portRes.json();
+                    updatePortfolioSummaryUI(port);
+                }
+
+                updateTimestampDisplay();
+
+            } catch (err) {
+                console.error("Dashboard otomatik yenileme hatası:", err);
+                if (updateIndicator) updateIndicator.classList.replace('bg-emerald-500', 'bg-rose-500');
+            } finally {
+                if (refreshIcon) refreshIcon.classList.remove('fa-spin');
+                if (updateIndicator) {
+                    setTimeout(() => {
+                        updateIndicator.className = "w-2 h-2 rounded-full bg-emerald-500 animate-pulse";
+                    }, 500);
+                }
+            }
+        }
+
+        /**
+         * Son güncelleme saatini HH:MM:SS formatında ekrana basar.
+         */
+        function updateTimestampDisplay() {
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString('tr-TR', { hour12: false });
+            const timeElem = document.getElementById('last-update-time');
+            if (timeElem) {
+                timeElem.textContent = timeStr;
+            }
+        }
+
+        /**
+         * Güven seviyesine göre ampirik geçmiş 5G isabet metnini üretir.
+         */
+        function formatConfidenceCalibrationText(confidence) {
+            const confKey = String(confidence || 3);
+            const stat = cachedConfidenceStats[confKey];
+            if (!stat || stat.sample_count === 0) {
+                return '<span class="text-slate-500 text-[10px] block">(yetersiz veri, N=0)</span>';
+            }
+            if (!stat.has_sufficient_data) {
+                return `<span class="text-slate-500 text-[10px] block">(yetersiz veri, N=${stat.sample_count})</span>`;
+            }
+            return `<span class="text-indigo-300 text-[10px] block font-medium">(Geçmiş 5G: %${stat.hit_rate_5d}, N=${stat.sample_count})</span>`;
+        }
+
+        /**
+         * Portföy Simülasyonu ve Sistem Durumunu Günceller.
+         */
+        function updatePortfolioSummaryUI(port) {
+            if (!port) return;
+
+            // 1. Sistem Uptime & Canlılık
+            const uptimeBadge = document.getElementById('system-uptime-badge');
+            const uptimeText = document.getElementById('system-uptime-text');
+            const stoppedAlert = document.getElementById('system-stopped-alert');
+            const stoppedDetail = document.getElementById('system-stopped-detail');
+
+            if (port.system_state) {
+                const isActive = port.system_state.is_active;
+                if (uptimeBadge) {
+                    uptimeBadge.className = `hidden sm:flex items-center space-x-2 px-3 py-1.5 rounded-lg text-xs font-semibold ${isActive ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}`;
+                }
+                if (uptimeText) {
+                    uptimeText.textContent = isActive 
+                        ? `Sistem Aktif (${port.system_state.uptime_str})` 
+                        : `⚠️ Sistem Durdu (Son: ${port.system_state.last_active_str})`;
+                }
+                if (stoppedAlert) {
+                    if (isActive) {
+                        stoppedAlert.classList.add('hidden');
+                    } else {
+                        stoppedAlert.classList.remove('hidden');
+                        if (stoppedDetail) {
+                            stoppedDetail.innerHTML = `En son döngü aktivitesi: <b class="font-mono text-white">${port.system_state.last_active_str}</b>. Yeni bildirim taraması için terminalde <code class="bg-slate-900 px-1 py-0.5 rounded text-rose-200">python main.py</code> komutunun çalıştığından emin olun.`;
+                        }
+                    }
+                }
+            }
+
+            // 2. Portföy Özet Kartları
+            const startCap = document.getElementById('port-start-capital');
+            const curBal = document.getElementById('port-current-balance');
+            const totRet = document.getElementById('port-total-return');
+            const totRetPct = document.getElementById('port-total-return-pct');
+            const bistRet = document.getElementById('port-bist100-return');
+            const bistBadge = document.getElementById('port-bist100-badge');
+            const posCount = document.getElementById('port-positions-count');
+            const unrealSub = document.getElementById('port-unrealized-sub');
+            const realPnl = document.getElementById('port-realized-pnl');
+            const skippedCount = document.getElementById('stat-skipped-count');
+
+            if (startCap) startCap.textContent = `₺${(port.start_capital || 100000).toLocaleString('tr-TR', { maximumFractionDigits: 0 })}`;
+            if (curBal) curBal.textContent = `₺${(port.current_balance || 100000).toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            
+            if (totRet) {
+                const pnlVal = port.total_pnl || 0.0;
+                totRet.textContent = `${pnlVal >= 0 ? '+' : ''}₺${pnlVal.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                totRet.className = `text-2xl font-extrabold ${pnlVal >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+            }
+
+            if (totRetPct) {
+                const pctVal = port.total_return_pct || 0.0;
+                totRetPct.textContent = `${pctVal >= 0 ? '+' : ''}${pctVal.toFixed(2)}%`;
+                totRetPct.className = `text-[11px] font-semibold ${pctVal >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+            }
+
+            if (bistRet) {
+                const bVal = port.bist100_return_pct || 0.0;
+                bistRet.textContent = `${bVal >= 0 ? '+' : ''}${bVal.toFixed(2)}%`;
+            }
+
+            if (bistBadge) {
+                if (port.beats_bist100) {
+                    bistBadge.className = 'inline-flex items-center text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
+                    bistBadge.textContent = '🏆 Piyasayı Geçiyor';
+                } else {
+                    bistBadge.className = 'inline-flex items-center text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400 border border-rose-500/20';
+                    bistBadge.textContent = '📉 Piyasanın Gerisinde';
+                }
+            }
+
+            if (posCount) {
+                posCount.innerHTML = `${port.open_positions_count || 0} <span class="text-xs font-normal text-slate-400">Açık</span> / ${port.closed_positions_count || 0} <span class="text-xs font-normal text-slate-400">Kapalı</span>`;
+            }
+
+            if (unrealSub) {
+                const unVal = port.unrealized_pnl || 0.0;
+                unrealSub.innerHTML = `Açık K/Z: <span class="${unVal >= 0 ? 'text-emerald-400' : 'text-rose-400'} font-mono">₺${unVal >= 0 ? '+' : ''}${unVal.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>`;
+            }
+
+            if (realPnl) {
+                const rVal = port.realized_pnl || 0.0;
+                realPnl.textContent = `${rVal >= 0 ? '+' : ''}₺${rVal.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                realPnl.className = `text-2xl font-extrabold ${rVal >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+            }
+
+            if (skippedCount) {
+                skippedCount.textContent = port.skipped_trades_count || 0;
+            }
+
+            // 3. Portföy Pozisyon Tablosu
+            const tbody = document.getElementById('portfolio-positions-tbody');
+            if (tbody && port.positions) {
+                tbody.innerHTML = port.positions.map(pos => `
+                    <tr class="hover:bg-slate-800/50 transition cursor-pointer" onclick="openTradeDetailModal(${pos.id})">
+                        <td class="px-4 py-3.5 font-bold text-white">
+                            <span>${pos.stock_code}</span>
+                            <span class="block text-[10px] font-normal text-slate-400 truncate max-w-[140px]">${pos.company_name || pos.stock_code}</span>
+                        </td>
+                        <td class="px-4 py-3.5">
+                            ${pos.recommendation === 'AL' 
+                                ? '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">🟢 AL</span>'
+                                : '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-rose-500/10 text-rose-400 border border-rose-500/20">🔴 SAT</span>'}
+                        </td>
+                        <td class="px-4 py-3.5 font-mono text-slate-300">
+                            ₺${(pos.position_size || 10000).toLocaleString('tr-TR', { maximumFractionDigits: 0 })}
+                        </td>
+                        <td class="px-4 py-3.5 font-mono font-semibold text-white">
+                            ${pos.entry_price ? `₺${pos.entry_price.toFixed(2)}` : '-'}
+                        </td>
+                        <td class="px-4 py-3.5 font-mono font-semibold text-white">
+                            ${pos.current_or_exit_price ? `₺${pos.current_or_exit_price.toFixed(2)}` : '-'}
+                        </td>
+                        <td class="px-4 py-3.5">
+                            ${pos.status === 'AÇIK'
+                                ? '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400 mr-1.5 animate-pulse"></span>AÇIK</span>'
+                                : '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-800 text-slate-400 border border-slate-700">KAPANDI (5G)</span>'}
+                        </td>
+                        <td class="px-4 py-3.5 font-mono font-bold ${pos.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}">
+                            ${pos.pnl >= 0 ? '+' : ''}₺${pos.pnl.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </td>
+                        <td class="px-4 py-3.5 font-mono font-bold ${pos.return_pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}">
+                            ${pos.return_pct >= 0 ? '+' : ''}${pos.return_pct.toFixed(2)}%
+                        </td>
+                        <td class="px-4 py-3.5 text-center" onclick="event.stopPropagation()">
+                            <button onclick="openTradeDetailModal(${pos.id})" class="px-2.5 py-1 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 text-xs font-semibold transition border border-indigo-500/30">
+                                Detay & Grafik
+                            </button>
+                        </td>
+                    </tr>
+                `).join('');
+            }
+        }
+
+        /**
+         * Simülasyonu Sıfırlar (100.000 TL Nakit ve 0 Pozisyon).
+         */
+        async function resetSimulation() {
+            const confirmed = confirm(
+                "Portföy simülasyonunu ve tüm paper trading geçmişini sıfırlamak istediğinize emin misiniz?\n\n" +
+                "• Başlangıç kasası ₺100.000,00 nakite dönecek.\n" +
+                "• Tüm açık ve kapalı pozisyonlar temizlenecek.\n" +
+                "• Sistem bundan sonraki canlı bildirimlerle sıfırdan işlem açmaya başlayacak."
+            );
+            if (!confirmed) return;
+
+            try {
+                const res = await fetch('/api/portfolio/reset', { method: 'POST' });
+                if (res.ok) {
+                    const data = await res.json();
+                    alert(data.message || "Simülasyon başarıyla sıfırlandı!");
+                    refreshDashboardData();
+                } else {
+                    alert("Sıfırlama sırasında bir hata oluştu.");
+                }
+            } catch (err) {
+                console.error("Reset error:", err);
+                alert("Sunucu ile bağlantı kurulamadı.");
+            }
+        }
+
+        /**
+         * Paper Trading İstatistik Kartlarını Günceller.
+         */
+        function updatePaperStatsUI(stats) {
+            const totalTrades = document.getElementById('stat-total-trades');
+            const tradeBreakdown = document.getElementById('stat-trade-breakdown');
+            const hitrate1d = document.getElementById('stat-hitrate-1d');
+            const resolved1d = document.getElementById('stat-resolved-1d');
+            const hitrate5d = document.getElementById('stat-hitrate-5d');
+            const resolved5d = document.getElementById('stat-resolved-5d');
+            const pnl1d = document.getElementById('stat-pnl-1d');
+            const pnl5d = document.getElementById('stat-pnl-5d');
+            const pendingCount = document.getElementById('stat-pending-count');
+
+            if (totalTrades) totalTrades.textContent = stats.total_trades || 0;
+            if (tradeBreakdown) tradeBreakdown.textContent = `(${stats.total_al || 0} AL, ${stats.total_sat || 0} SAT)`;
+
+            if (hitrate1d) {
+                hitrate1d.textContent = `%${stats.hit_rate_1d || 0}`;
+                hitrate1d.className = `text-2xl font-extrabold ${stats.hit_rate_1d >= 50 ? 'text-emerald-400' : 'text-amber-400'}`;
+            }
+            if (resolved1d) resolved1d.textContent = `(${stats.correct_1d || 0}/${stats.resolved_1d || 0} sonuç)`;
+
+            if (hitrate5d) {
+                hitrate5d.textContent = `%${stats.hit_rate_5d || 0}`;
+                hitrate5d.className = `text-2xl font-extrabold ${stats.hit_rate_5d >= 50 ? 'text-emerald-400' : 'text-amber-400'}`;
+            }
+            if (resolved5d) resolved5d.textContent = `(${stats.correct_5d || 0}/${stats.resolved_5d || 0} sonuç)`;
+
+            if (pnl1d) {
+                const val1 = stats.total_pnl_1d || 0.0;
+                pnl1d.textContent = `${val1 >= 0 ? '+' : ''}₺${val1.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                pnl1d.className = `text-2xl font-extrabold ${val1 >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+            }
+
+            if (pnl5d) {
+                const val5 = stats.total_pnl_5d || 0.0;
+                pnl5d.textContent = `${val5 >= 0 ? '+' : ''}₺${val5.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                pnl5d.className = `text-2xl font-extrabold ${val5 >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+            }
+
+            if (pendingCount) pendingCount.textContent = stats.pending_count || 0;
+        }
+
+        /**
+         * Paper Trading Tablo Satırlarını Günceller.
+         */
+        function updatePaperTradesTableUI(trades) {
+            const tbody = document.getElementById('paper-trades-tbody');
+            if (!tbody) return;
+
+            if (!trades || trades.length === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="9" class="px-6 py-8 text-center text-slate-500">
+                            Henüz kaydedilmiş Paper Trade işlemi bulunmuyor. Yeni AL/SAT önerisi üretildiğinde otomatik listelenecektir.
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
+
+            tbody.innerHTML = trades.map(trade => {
+                let recBadge = '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-slate-700 text-slate-300">⚪ NÖTR</span>';
+                if (trade.recommendation === 'AL') {
+                    recBadge = '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">🟢 AL</span>';
+                } else if (trade.recommendation === 'SAT') {
+                    recBadge = '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-rose-500/10 text-rose-400 border border-rose-500/20">🔴 SAT</span>';
+                }
+
+                const stars = '★'.repeat(trade.confidence || 3);
+                const calibHtml = formatConfidenceCalibrationText(trade.confidence);
+
+                let entryHtml = '<span class="text-slate-500 italic">Bekleniyor</span>';
+                if (trade.entry_price) {
+                    entryHtml = `
+                        <span class="font-mono font-semibold text-white">₺${trade.entry_price.toFixed(2)}</span>
+                        ${trade.entry_note ? `<span class="block text-[10px] text-slate-500 truncate max-w-[130px]" title="${escapeHtml(trade.entry_note)}">${escapeHtml(trade.entry_note)}</span>` : ''}
+                    `;
+                }
+
+                let outcome1dHtml = '<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-slate-800 text-slate-400 border border-slate-700">⏳ Bekliyor</span>';
+                if (trade.checked_1d) {
+                    const pnlVal1 = trade.pnl_1d !== null && trade.pnl_1d !== undefined ? trade.pnl_1d : null;
+                    const pnlFormatted1 = pnlVal1 !== null ? `<span class="block text-[10px] font-mono mt-0.5 ${pnlVal1 >= 0 ? 'text-emerald-400' : 'text-rose-400'}">P&L: ${pnlVal1 >= 0 ? '+' : ''}₺${pnlVal1.toFixed(2)}</span>` : '';
+
+                    if (trade.outcome_1d === 'DOĞRU') {
+                        outcome1dHtml = `<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">✓ DOĞRU (₺${(trade.price_1d || 0).toFixed(2)})</span>${pnlFormatted1}`;
+                    } else {
+                        outcome1dHtml = `<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-rose-500/20 text-rose-400 border border-rose-500/30">✗ YANLIŞ (₺${(trade.price_1d || 0).toFixed(2)})</span>${pnlFormatted1}`;
+                    }
+                }
+
+                let outcome5dHtml = '<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-slate-800 text-slate-400 border border-slate-700">⏳ Bekliyor</span>';
+                if (trade.checked_5d) {
+                    const pnlVal5 = trade.pnl_5d !== null && trade.pnl_5d !== undefined ? trade.pnl_5d : null;
+                    const pnlFormatted5 = pnlVal5 !== null ? `<span class="block text-[10px] font-mono mt-0.5 ${pnlVal5 >= 0 ? 'text-emerald-400' : 'text-rose-400'}">P&L: ${pnlVal5 >= 0 ? '+' : ''}₺${pnlVal5.toFixed(2)}</span>` : '';
+
+                    if (trade.outcome_5d === 'DOĞRU') {
+                        outcome5dHtml = `<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">✓ DOĞRU (₺${(trade.price_5d || 0).toFixed(2)})</span>${pnlFormatted5}`;
+                    } else {
+                        outcome5dHtml = `<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-rose-500/20 text-rose-400 border border-rose-500/30">✗ YANLIŞ (₺${(trade.price_5d || 0).toFixed(2)})</span>${pnlFormatted5}`;
+                    }
+                }
+
+                return `
+                    <tr class="hover:bg-slate-800/50 transition cursor-pointer" onclick="openTradeDetailModal(${trade.id})">
+                        <td class="px-4 py-4 font-bold text-white flex items-center space-x-1.5">
+                            <span>${escapeHtml(trade.stock_code)}</span>
+                            ${trade.link ? `<a href="${escapeHtml(trade.link)}" target="_blank" onclick="event.stopPropagation()" class="text-indigo-400 hover:text-indigo-300 text-xs"><i class="fa-solid fa-arrow-up-right-from-square"></i></a>` : ''}
+                        </td>
+                        <td class="px-4 py-4">${recBadge}</td>
+                        <td class="px-4 py-4 whitespace-nowrap">
+                            <span class="text-amber-400">${stars}</span>
+                            <span class="text-slate-400 text-[11px] block">Güven: ${trade.confidence || 3}/5</span>
+                            ${calibHtml}
+                        </td>
+                        <td class="px-4 py-4">${entryHtml}</td>
+                        <td class="px-4 py-4">${outcome1dHtml}</td>
+                        <td class="px-4 py-4">${outcome5dHtml}</td>
+                        <td class="px-4 py-4 text-slate-400 whitespace-nowrap">${escapeHtml(trade.recommended_at || '')}</td>
+                        <td class="px-4 py-4 text-slate-300 max-w-[180px] truncate" title="${escapeHtml(trade.reasoning || '')}">
+                            ${escapeHtml(trade.reasoning || '')}
+                        </td>
+                        <td class="px-4 py-4 text-center" onclick="event.stopPropagation()">
+                            <button onclick="openTradeDetailModal(${trade.id})" class="bg-slate-800 hover:bg-indigo-600 hover:text-white text-slate-300 px-2.5 py-1 rounded-lg text-[11px] font-medium transition flex items-center space-x-1 mx-auto border border-slate-700">
+                                <i class="fa-solid fa-chart-area"></i>
+                                <span>Detay & Grafik</span>
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        /**
+         * Yapay Zeka Öneri Kartlarını Günceller.
+         */
+        function updateRecommendationsUI(recs) {
+            const container = document.getElementById('recommendations-grid');
+            if (!container) return;
+
+            if (!recs || recs.length === 0) {
+                container.innerHTML = `
+                    <div class="col-span-3 bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center text-slate-500">
+                        Henüz analiz edilmiş bildirim bulunmuyor.
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = recs.map(rec => {
+                let badge = '<span class="px-2.5 py-1 rounded-full text-xs font-extrabold bg-slate-800 text-slate-400 border border-slate-700">⚪ NÖTR</span>';
+                if (rec.recommendation === 'AL') {
+                    badge = '<span class="px-2.5 py-1 rounded-full text-xs font-extrabold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">🟢 AL</span>';
+                } else if (rec.recommendation === 'SAT') {
+                    badge = '<span class="px-2.5 py-1 rounded-full text-xs font-extrabold bg-rose-500/10 text-rose-400 border border-rose-500/30">🔴 SAT</span>';
+                }
+
+                const stars = '★'.repeat(rec.confidence || 3);
+                const calibHtml = formatConfidenceCalibrationText(rec.confidence);
+
+                return `
+                    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 hover:border-slate-700 transition flex flex-col justify-between shadow-sm">
+                        <div>
+                            <div class="flex items-center justify-between mb-3">
+                                <span class="text-xs font-bold text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20">
+                                    ${escapeHtml(rec.stock_code)}
+                                </span>
+                                <div>${badge}</div>
+                            </div>
+                            <h4 class="text-sm font-semibold text-white mb-2 line-clamp-2" title="${escapeHtml(rec.title || '')}">${escapeHtml(rec.title || '')}</h4>
+                            <p class="text-xs text-slate-400 leading-relaxed mb-3 bg-slate-950/60 p-3 rounded-xl border border-slate-800/80">
+                                ${escapeHtml(rec.reasoning || '')}
+                            </p>
+                        </div>
+                        <div class="flex items-center justify-between text-[11px] text-slate-500 pt-3 border-t border-slate-800/60">
+                            <div>
+                                <span class="text-amber-400">${stars}</span>
+                                <span class="text-slate-400 text-[10px]">(${rec.confidence || 3}/5)</span>
+                                ${calibHtml}
+                            </div>
+                            <span>${escapeHtml(rec.publish_date || '')}</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // =====================================================================
+        // MODAL & CHART.JS FİYAT GRAFİĞİ İŞLEMLERİ
+        // =====================================================================
+        async function openTradeDetailModal(tradeId) {
+            console.log("👉 [Modal] Açılıyor - Trade ID:", tradeId);
+            const modal = document.getElementById('detail-modal');
+            if (!modal) return;
+
+            let trade = cachedTrades.find(t => t.id === tradeId);
+            if (!trade) {
+                try {
+                    const res = await fetch(`/api/paper-trades/${tradeId}`);
+                    if (res.ok) trade = await res.json();
+                } catch (e) {
+                    console.error("Detay yüklenemedi:", e);
+                }
+            }
+
+            if (!trade) {
+                console.error("❌ [Modal] İşlem kaydı bulunamadı! ID:", tradeId);
+                return;
+            }
+
+            console.log("ℹ️ [Modal] Yüklenen İşlem Bilgisi:", trade);
+
+            // DOM Elemanlarını doldur
+            document.getElementById('modal-stock-badge').textContent = trade.stock_code || 'BIST';
+            document.getElementById('modal-company-name').textContent = trade.company_name || trade.stock_code || 'BIST Şirketi';
+            
+            // Öneri Rozeti
+            const recElem = document.getElementById('modal-rec-badge');
+            if (trade.recommendation === 'AL') {
+                recElem.innerHTML = '<span class="px-3 py-1 rounded-xl text-xs font-extrabold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">🟢 AL</span>';
+            } else if (trade.recommendation === 'SAT') {
+                recElem.innerHTML = '<span class="px-3 py-1 rounded-xl text-xs font-extrabold bg-rose-500/20 text-rose-400 border border-rose-500/30">🔴 SAT</span>';
+            } else {
+                recElem.innerHTML = '<span class="px-3 py-1 rounded-xl text-xs font-extrabold bg-slate-800 text-slate-400 border border-slate-700">⚪ NÖTR</span>';
+            }
+
+            // Fiyatlar ve PnL
+            document.getElementById('modal-entry-price').textContent = trade.entry_price ? `₺${trade.entry_price.toFixed(2)}` : 'Bekleniyor';
+            document.getElementById('modal-entry-note').textContent = trade.entry_note || 'Seans İçi';
+
+            // 1G
+            const p1Elem = document.getElementById('modal-price-1d');
+            const pnl1Elem = document.getElementById('modal-pnl-1d');
+            if (trade.checked_1d) {
+                p1Elem.textContent = `₺${(trade.price_1d || 0).toFixed(2)}`;
+                const val1 = trade.pnl_1d !== null && trade.pnl_1d !== undefined ? trade.pnl_1d : 0.0;
+                pnl1Elem.textContent = `P&L: ${val1 >= 0 ? '+' : ''}₺${val1.toFixed(2)} (${trade.outcome_1d})`;
+                pnl1Elem.className = `text-[10px] font-mono block ${val1 >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+            } else {
+                p1Elem.textContent = '⏳ Bekliyor';
+                pnl1Elem.textContent = 'Doğrulanmadı';
+                pnl1Elem.className = 'text-[10px] text-slate-500 block';
+            }
+
+            // 5G
+            const p5Elem = document.getElementById('modal-price-5d');
+            const pnl5Elem = document.getElementById('modal-pnl-5d');
+            if (trade.checked_5d) {
+                p5Elem.textContent = `₺${(trade.price_5d || 0).toFixed(2)}`;
+                const val5 = trade.pnl_5d !== null && trade.pnl_5d !== undefined ? trade.pnl_5d : 0.0;
+                pnl5Elem.textContent = `P&L: ${val5 >= 0 ? '+' : ''}₺${val5.toFixed(2)} (${trade.outcome_5d})`;
+                pnl5Elem.className = `text-[10px] font-mono block ${val5 >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+            } else {
+                p5Elem.textContent = '⏳ Bekliyor';
+                pnl5Elem.textContent = 'Doğrulanmadı';
+                pnl5Elem.className = 'text-[10px] text-slate-500 block';
+            }
+
+            // Güven & Kalibrasyon
+            const confVal = trade.confidence || 3;
+            document.getElementById('modal-confidence').textContent = '★'.repeat(confVal) + '☆'.repeat(Math.max(0, 5 - confVal));
+            
+            const confStat = cachedConfidenceStats[String(confVal)];
+            const calibElem = document.getElementById('modal-confidence-calib');
+            if (confStat && confStat.has_sufficient_data) {
+                calibElem.textContent = `Geçmiş 5G İsabet: %${confStat.hit_rate_5d} (N=${confStat.sample_count})`;
+                calibElem.className = 'text-[10px] text-indigo-400 font-medium block';
+            } else if (confStat && confStat.sample_count > 0) {
+                calibElem.textContent = `Yetersiz Veri (N=${confStat.sample_count})`;
+                calibElem.className = 'text-[10px] text-slate-500 block';
+            } else {
+                calibElem.textContent = 'Yetersiz Veri (N=0)';
+                calibElem.className = 'text-[10px] text-slate-500 block';
+            }
+            
+            // Gerekçe
+            document.getElementById('modal-reasoning').textContent = trade.reasoning || 'Gerekçe belirtilmemiş.';
+
+            // Zamanlar
+            document.getElementById('modal-publish-date').textContent = trade.publish_date || trade.recommended_at || '--';
+            document.getElementById('modal-recommended-at').textContent = trade.recommended_at || trade.analyzed_at || '--';
+            document.getElementById('modal-entry-date').textContent = `${trade.entry_date || '--'} (${trade.entry_note || 'Seans'})`;
+
+            // Bildirim
+            document.getElementById('modal-notif-title').textContent = trade.title || trade.subject || 'KAP Bildirimi';
+            document.getElementById('modal-notif-summary').textContent = trade.summary || trade.raw_content || 'Detaylı metin bulunamadı.';
+
+            // KAP Linki
+            const kapLink = document.getElementById('modal-kap-link');
+            if (trade.link) {
+                kapLink.href = trade.link;
+                kapLink.classList.remove('hidden');
+            } else {
+                kapLink.classList.add('hidden');
+            }
+
+            // Modalı görünür yap
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+
+            // Fiyat Grafiğini ve Temel Verileri DOM yerleştikten sonra asenkron yükle
+            loadPriceChart(trade);
+            loadFundamentals(trade.stock_code);
+        }
+
+        /**
+         * Borsapy üzerinden temel analiz verilerini (F/K, PD/DD, Piyasa Değeri, Bilanço) çeker ve gösterir.
+         */
+        async function loadFundamentals(stockCode) {
+            console.log("🏛️ [loadFundamentals] Yükleniyor...", stockCode);
+            const periodBadge = document.getElementById('fundamentals-period-badge');
+            const loadingBadge = document.getElementById('fundamentals-loading-badge');
+            const peElem = document.getElementById('fund-pe-ratio');
+            const pbElem = document.getElementById('fund-pb-ratio');
+            const mcapElem = document.getElementById('fund-market-cap');
+            const floatElem = document.getElementById('fund-float-ratio');
+            const balanceRow = document.getElementById('fund-balance-summary-row');
+            const netProfitElem = document.getElementById('fund-net-profit');
+            const equityElem = document.getElementById('fund-total-equity');
+            const assetsElem = document.getElementById('fund-total-assets');
+
+            // Sıfırlama
+            if (loadingBadge) loadingBadge.classList.remove('hidden');
+            if (peElem) peElem.textContent = '--';
+            if (pbElem) pbElem.textContent = '--';
+            if (mcapElem) mcapElem.textContent = '--';
+            if (floatElem) floatElem.textContent = '--';
+            if (balanceRow) balanceRow.classList.add('hidden');
+            if (periodBadge) periodBadge.textContent = 'Son Bilanço Dönemi: --';
+
+            try {
+                const cleanStock = (stockCode || 'BIST').split(',')[0].trim();
+                const res = await fetch(`/api/fundamentals/${cleanStock}`);
+                const data = await res.json();
+                console.log("🏛️ [loadFundamentals] Gelen Temel Veriler:", data);
+
+                if (data && data.status === 'success') {
+                    // F/K
+                    if (peElem) peElem.textContent = data.pe_ratio !== null && data.pe_ratio !== undefined ? data.pe_ratio.toFixed(2) : 'A/D';
+                    // PD/DD
+                    if (pbElem) pbElem.textContent = data.pb_ratio !== null && data.pb_ratio !== undefined ? data.pb_ratio.toFixed(2) : 'A/D';
+                    // Piyasa Değeri
+                    if (mcapElem) mcapElem.textContent = data.market_cap_formatted || 'Bilinmiyor';
+                    // Halka Açıklık & Yabancı
+                    if (floatElem) {
+                        const ff = data.free_float !== null && data.free_float !== undefined ? `%${data.free_float.toFixed(1)}` : '-';
+                        const fr = data.foreign_ratio !== null && data.foreign_ratio !== undefined ? `%${data.foreign_ratio.toFixed(1)}` : '-';
+                        floatElem.textContent = `${ff} / ${fr}`;
+                    }
+                    // Bilanço Dönemi
+                    if (periodBadge) {
+                        periodBadge.textContent = `Son Bilanço Dönemi: ${data.latest_balance_period || 'Bilinmiyor'}`;
+                    }
+                    // Bilanço Kalemleri
+                    if (data.balance_summary && (data.balance_summary.net_profit !== undefined || data.balance_summary.total_equity !== undefined)) {
+                        if (balanceRow) balanceRow.classList.remove('hidden');
+                        if (netProfitElem && data.balance_summary.net_profit !== undefined) {
+                            netProfitElem.textContent = `₺${(data.balance_summary.net_profit / 1_000_000_000).toFixed(2)} Mr`;
+                        }
+                        if (equityElem && data.balance_summary.total_equity !== undefined) {
+                            equityElem.textContent = `₺${(data.balance_summary.total_equity / 1_000_000_000).toFixed(2)} Mr`;
+                        }
+                        if (assetsElem && data.balance_summary.total_assets !== undefined) {
+                            assetsElem.textContent = `₺${(data.balance_summary.total_assets / 1_000_000_000).toFixed(2)} Mr`;
+                        }
+                    }
+                } else {
+                    if (periodBadge) periodBadge.textContent = 'Temel veri bulunamadı';
+                    if (peElem) peElem.textContent = 'Veri yok';
+                }
+            } catch (err) {
+                console.error("❌ [loadFundamentals] Hata:", err);
+                if (periodBadge) periodBadge.textContent = 'Veri çekilemedi';
+            } finally {
+                if (loadingBadge) loadingBadge.classList.add('hidden');
+            }
+        }
+
+        /**
+         * Chart.js ile 15-20 günlük fiyat grafiğini çizer.
+         */
+        async function loadPriceChart(trade) {
+            console.log("📈 [loadPriceChart] Başlatılıyor...", trade.stock_code);
+            const canvas = document.getElementById('tradePriceChart');
+            const fallback = document.getElementById('chart-fallback');
+            const fallbackText = document.getElementById('chart-fallback-text');
+            const loadingBadge = document.getElementById('chart-loading-badge');
+
+            if (!canvas) {
+                console.error("❌ Canvas elementi DOM'da bulunamadı!");
+                return;
+            }
+
+            if (loadingBadge) loadingBadge.classList.remove('hidden');
+            if (fallback) fallback.classList.add('hidden');
+            canvas.classList.remove('hidden');
+
+            // Önceki grafiği temizle
+            if (priceChartInstance) {
+                priceChartInstance.destroy();
+                priceChartInstance = null;
+            }
+
+            try {
+                const cleanStock = (trade.stock_code || 'BIST').split(',')[0].trim();
+                const entryDate = trade.entry_date || (trade.publish_date ? trade.publish_date.split(' ')[0] : '') || (trade.recommended_at ? trade.recommended_at.split(' ')[0] : '');
+                const entryPrice = trade.entry_price || null;
+
+                const url = `/api/chart-data/${cleanStock}?from_date=${encodeURIComponent(entryDate)}&entry_price=${entryPrice || ''}`;
+                console.log("🌐 [loadPriceChart] Fetch İsteği Gönderiliyor:", url);
+
+                const res = await fetch(url);
+                console.log("📡 [loadPriceChart] Fetch Yanıt Kodu:", res.status);
+                const chartData = await res.json();
+                console.log("📊 [loadPriceChart] Gelen Veri:", chartData);
+
+                if (!chartData || chartData.error || !chartData.dates || chartData.dates.length === 0) {
+                    console.warn("⚠️ [loadPriceChart] Grafik verisi boş:", chartData ? chartData.error : 'Veri yok');
+                    canvas.classList.add('hidden');
+                    if (fallbackText && chartData && chartData.error) fallbackText.textContent = chartData.error;
+                    if (fallback) fallback.classList.remove('hidden');
+                    return;
+                }
+
+                // Bildirim giriş tarihini DD.MM.YYYY formatına çevir
+                let targetEntryDateStr = '';
+                if (entryDate) {
+                    const parts = entryDate.split(/[-./ ]/);
+                    if (parts.length >= 3) {
+                        if (parts[0].length === 4) {
+                            targetEntryDateStr = `${parts[2].padStart(2, '0')}.${parts[1].padStart(2, '0')}.${parts[0]}`;
+                        } else {
+                            targetEntryDateStr = `${parts[0].padStart(2, '0')}.${parts[1].padStart(2, '0')}.${parts[2]}`;
+                        }
+                    }
+                }
+
+                console.log("🎯 [loadPriceChart] Hedef Giriş Tarihi:", targetEntryDateStr, "Giriş Fiyatı:", entryPrice);
+
+                // Grafik Nokta Renkleri & İşaretleri (Giriş noktasını tam olarak vurgula)
+                const pointBgColors = [];
+                const pointBorderColors = [];
+                const pointRadius = [];
+
+                chartData.dates.forEach((d, idx) => {
+                    const price = chartData.prices[idx];
+                    const isEntryDate = (targetEntryDateStr && d === targetEntryDateStr);
+                    const isEntryPrice = (entryPrice && Math.abs(price - entryPrice) < 0.05);
+                    const isEntry = isEntryDate || isEntryPrice;
+                    
+                    if (isEntry && trade.recommendation === 'AL') {
+                        pointBgColors.push('#10b981'); // Emerald
+                        pointBorderColors.push('#ffffff');
+                        pointRadius.push(7);
+                    } else if (isEntry && trade.recommendation === 'SAT') {
+                        pointBgColors.push('#f43f5e'); // Rose
+                        pointBorderColors.push('#ffffff');
+                        pointRadius.push(7);
+                    } else {
+                        pointBgColors.push('#6366f1');
+                        pointBorderColors.push('#6366f1');
+                        pointRadius.push(3);
+                    }
+                });
+
+                // DOM'un render olması için kısa bir gecikme
+                await new Promise(r => setTimeout(r, 40));
+
+                const ctx = canvas.getContext('2d');
+                
+                // Arka plan degrade dolgusu
+                const gradient = ctx.createLinearGradient(0, 0, 0, 220);
+                gradient.addColorStop(0, trade.recommendation === 'AL' ? 'rgba(16, 185, 129, 0.25)' : 'rgba(99, 102, 241, 0.25)');
+                gradient.addColorStop(1, 'rgba(15, 23, 42, 0.0)');
+
+                priceChartInstance = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: chartData.dates,
+                        datasets: [{
+                            label: `${cleanStock} Kapanış Fiyatı (₺)`,
+                            data: chartData.prices,
+                            borderColor: trade.recommendation === 'AL' ? '#10b981' : '#6366f1',
+                            borderWidth: 2.5,
+                            backgroundColor: gradient,
+                            fill: true,
+                            tension: 0.35,
+                            pointBackgroundColor: pointBgColors,
+                            pointBorderColor: pointBorderColors,
+                            pointRadius: pointRadius,
+                            pointHoverRadius: 8,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: {
+                            intersect: false,
+                            mode: 'index',
+                        },
+                        plugins: {
+                            legend: {
+                                display: true,
+                                labels: { color: '#94a3b8', font: { size: 11, family: 'sans-serif' } }
+                            },
+                            tooltip: {
+                                backgroundColor: '#0f172a',
+                                titleColor: '#ffffff',
+                                bodyColor: '#cbd5e1',
+                                borderColor: '#334155',
+                                borderWidth: 1,
+                                padding: 10,
+                                callbacks: {
+                                    label: function(context) {
+                                        return ` Fiyat: ₺${context.parsed.y.toFixed(2)}`;
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                grid: { color: 'rgba(51, 65, 85, 0.3)' },
+                                ticks: { color: '#64748b', font: { size: 10 }, maxRotation: 45 }
+                            },
+                            y: {
+                                grid: { color: 'rgba(51, 65, 85, 0.3)' },
+                                ticks: {
+                                    color: '#64748b',
+                                    font: { size: 10 },
+                                    callback: function(value) { return '₺' + value.toFixed(2); }
+                                }
+                            }
+                        }
+                    }
+                });
+
+                console.log("✅ [loadPriceChart] Chart.js grafiği başarıyla oluşturuldu.");
+
+            } catch (err) {
+                console.error("❌ [loadPriceChart] Grafik yükleme hatası:", err);
+                canvas.classList.add('hidden');
+                if (fallback) fallback.classList.remove('hidden');
+            } finally {
+                if (loadingBadge) loadingBadge.classList.add('hidden');
+            }
+        }
+
+        function closeTradeDetailModal() {
+            const modal = document.getElementById('detail-modal');
+            if (modal) {
+                modal.classList.add('hidden');
+                modal.classList.remove('flex');
+            }
+            if (priceChartInstance) {
+                priceChartInstance.destroy();
+                priceChartInstance = null;
+            }
+        }
+
+        // Modal dışına tıklayınca kapatma
+        window.addEventListener('click', (e) => {
+            const modal = document.getElementById('detail-modal');
+            if (e.target === modal) {
+                closeTradeDetailModal();
+            }
+        });
+
+        // ESC tuşuyla kapatma
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                closeTradeDetailModal();
+            }
+        });
+
+        /**
+         * XSS Koruması için HTML Kaçış Yardımcısı.
+         */
+        function escapeHtml(str) {
+            if (!str) return '';
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+    </script>
+
+</body>
+</html>
