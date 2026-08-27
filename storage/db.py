@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Any
 from contextlib import contextmanager
@@ -273,20 +273,53 @@ class DatabaseManager:
         return inserted_count, len(notifications)
 
     def get_unprocessed_notifications(
-        self, limit: int = 50
+        self, limit: int = 50, max_age_hours: Optional[int] = 48
     ) -> List[KapNotification]:
-        """Henüz LLM analizinden geçmemiş (is_processed = 0) bildirimleri getirir."""
+        """
+        Henüz LLM analizinden geçmemiş (is_processed = 0) bildirimleri getirir.
+        max_age_hours (varsayılan 48 saat): Canlı döngünün eski/tarihsel kuyrukları işlemesini engeller.
+        """
         query = """
             SELECT * FROM kap_notifications 
             WHERE is_processed = 0 
-            ORDER BY created_at DESC, publish_date DESC 
-            LIMIT ?;
+            ORDER BY created_at DESC, publish_date DESC;
         """
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(query, (limit,))
+            cursor.execute(query)
             rows = cursor.fetchall()
-            return [
+
+        now = datetime.utcnow()
+        cutoff_dt = now - timedelta(hours=max_age_hours) if max_age_hours else None
+        valid_notifs: List[KapNotification] = []
+        stale_ids_to_mark: List[str] = []
+
+        for row in rows:
+            if len(valid_notifs) >= limit:
+                break
+
+            p_str = row["publish_date"] or ""
+            c_str = row["created_at"] or ""
+            parsed_dt = None
+
+            for fmt in ("%d.%m.%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%d.%m.%Y", "%Y-%m-%d"):
+                try:
+                    parsed_dt = datetime.strptime(p_str.strip(), fmt)
+                    break
+                except Exception:
+                    pass
+
+            if not parsed_dt and c_str:
+                try:
+                    parsed_dt = datetime.strptime(c_str.strip(), "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    pass
+
+            if cutoff_dt and parsed_dt and parsed_dt < cutoff_dt:
+                stale_ids_to_mark.append(row["id"])
+                continue
+
+            valid_notifs.append(
                 KapNotification(
                     id=row["id"],
                     disclosure_index=row["disclosure_index"],
@@ -309,8 +342,14 @@ class DatabaseManager:
                     analyzed_at=row["analyzed_at"],
                     created_at=row["created_at"],
                 )
-                for row in rows
-            ]
+            )
+
+        if stale_ids_to_mark:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.executemany("UPDATE kap_notifications SET is_processed = 1 WHERE id = ?;", [(i,) for i in stale_ids_to_mark])
+
+        return valid_notifs
 
     def save_analysis_result(
         self,
